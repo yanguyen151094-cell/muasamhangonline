@@ -1,14 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import AdminLayout from '../components/AdminLayout';
 import { adminUsers, accessLogs } from '../../../mocks/adminData';
 import { useAdminAuth } from '../../../hooks/useAdminAuth';
-import {
-  getPendingAccounts,
-  getPendingCount,
-  approveAccount,
-  rejectAccount,
-  type PendingAccount,
-} from '../../../utils/adminAccountStorage';
+import { supabase } from '../../../lib/supabase';
 
 const roleMap: Record<string, { label: string; color: string }> = {
   super_admin: { label: 'Super Admin', color: 'bg-red-100 text-red-700' },
@@ -34,11 +28,25 @@ const shippingPartners = [
   { id: 4, name: 'Viettel Post', fee: 18000, enabled: false },
 ];
 
+interface RegistrationRow {
+  id: string;
+  name: string;
+  email: string;
+  password_hash: string;
+  phone: string | null;
+  reason: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  submitted_at: string;
+}
+
 export default function AdminSettingsPage() {
   const { auth } = useAdminAuth();
   const [tab, setTab] = useState<'accounts' | 'requests' | 'payment' | 'security'>('accounts');
-  const [pendingList, setPendingList] = useState<PendingAccount[]>(() => getPendingAccounts());
-  const [pendingCount, setPendingCount] = useState(() => getPendingCount());
+  const [pendingList, setPendingList] = useState<RegistrationRow[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [loadingReqs, setLoadingReqs] = useState(false);
   const [payToggle, setPayToggle] = useState<Record<number, boolean>>(
     payMethods.reduce((a, m) => ({ ...a, [m.id]: m.enabled }), {})
   );
@@ -54,20 +62,54 @@ export default function AdminSettingsPage() {
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3000); };
   const fmt = (n: number) => new Intl.NumberFormat('vi-VN').format(n);
 
-  const handleApprove = (id: string) => {
-    approveAccount(id, auth?.name ?? 'Admin');
-    const updated = getPendingAccounts();
-    setPendingList(updated);
-    setPendingCount(updated.filter((a) => a.status === 'pending').length);
-    showToast('Đã phê duyệt tài khoản thành công!');
+  const fetchRegistrations = async () => {
+    setLoadingReqs(true);
+    const { data } = await supabase
+      .from('admin_registrations')
+      .select('*')
+      .order('submitted_at', { ascending: false });
+    const list = (data ?? []) as RegistrationRow[];
+    setPendingList(list);
+    setPendingCount(list.filter((a) => a.status === 'pending').length);
+    setLoadingReqs(false);
   };
 
-  const handleReject = (id: string) => {
-    rejectAccount(id, auth?.name ?? 'Admin');
-    const updated = getPendingAccounts();
-    setPendingList(updated);
-    setPendingCount(updated.filter((a) => a.status === 'pending').length);
+  useEffect(() => {
+    if (tab === 'requests') fetchRegistrations();
+  }, [tab]);
+
+  const handleApprove = async (row: RegistrationRow) => {
+    const reviewerName = auth?.name ?? 'Admin';
+
+    // Cập nhật trạng thái trong admin_registrations
+    await supabase
+      .from('admin_registrations')
+      .update({ status: 'approved', reviewed_by: reviewerName, reviewed_at: new Date().toISOString() })
+      .eq('id', row.id);
+
+    // Tạo tài khoản admin_accounts với đúng password_hash từ registration
+    await supabase.from('admin_accounts').upsert({
+      name: row.name,
+      email: row.email,
+      password_hash: row.password_hash,
+      phone: row.phone ?? '',
+      role: 'admin2',
+      title: 'Admin Cấp 2 — Nhân viên',
+      avatar: row.name.charAt(0).toUpperCase(),
+      status: 'active',
+    }, { onConflict: 'email' });
+
+    showToast('Đã phê duyệt tài khoản thành công!');
+    fetchRegistrations();
+  };
+
+  const handleReject = async (id: string) => {
+    await supabase
+      .from('admin_registrations')
+      .update({ status: 'rejected', reviewed_by: auth?.name ?? 'Admin', reviewed_at: new Date().toISOString() })
+      .eq('id', id);
     showToast('Đã từ chối yêu cầu đăng ký.');
+    fetchRegistrations();
   };
 
   return (
@@ -108,7 +150,12 @@ export default function AdminSettingsPage() {
       {/* === TAB: REGISTRATION REQUESTS === */}
       {tab === 'requests' && (
         <div className="space-y-5">
-          {pendingList.length === 0 ? (
+          {loadingReqs ? (
+            <div className="bg-white rounded-xl border border-gray-100 p-16 text-center">
+              <i className="ri-loader-4-line animate-spin text-gray-400 text-3xl"></i>
+              <p className="text-gray-400 text-sm mt-3">Đang tải dữ liệu...</p>
+            </div>
+          ) : pendingList.length === 0 ? (
             <div className="bg-white rounded-xl border border-gray-100 p-16 text-center">
               <div className="w-14 h-14 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
                 <i className="ri-user-received-line text-gray-400 text-3xl"></i>
@@ -163,9 +210,9 @@ export default function AdminSettingsPage() {
                           </div>
                         )}
                         <div className="mt-2 text-[10px] text-gray-400">
-                          Gửi lúc: {new Date(acc.submittedAt).toLocaleString('vi-VN')}
-                          {acc.reviewedAt && acc.reviewedBy && (
-                            <span className="ml-3">• Duyệt bởi: {acc.reviewedBy} lúc {new Date(acc.reviewedAt).toLocaleString('vi-VN')}</span>
+                          Gửi lúc: {new Date(acc.submitted_at).toLocaleString('vi-VN')}
+                          {acc.reviewed_at && acc.reviewed_by && (
+                            <span className="ml-3">• Duyệt bởi: {acc.reviewed_by} lúc {new Date(acc.reviewed_at).toLocaleString('vi-VN')}</span>
                           )}
                         </div>
                       </div>
@@ -173,7 +220,7 @@ export default function AdminSettingsPage() {
                       {acc.status === 'pending' && (
                         <div className="flex items-center gap-2 flex-shrink-0">
                           <button
-                            onClick={() => handleApprove(acc.id)}
+                            onClick={() => handleApprove(acc)}
                             className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg text-xs font-medium cursor-pointer whitespace-nowrap transition-colors"
                           >
                             <div className="w-3 h-3 flex items-center justify-center">

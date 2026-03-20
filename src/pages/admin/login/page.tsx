@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { adminAccounts } from '../../../mocks/adminData';
-import { findApprovedAccount } from '../../../utils/adminAccountStorage';
+import { supabase } from '../../../lib/supabase';
+
+const DEMO_ACCOUNTS = [
+  { email: 'admin@yamatoshop.vn', password: 'admin123', name: 'Nguyễn Minh Tuấn', role: 'admin1', avatar: 'T' },
+  { email: 'staff@yamatoshop.vn', password: 'staff123', name: 'Trần Thị Lan', role: 'admin2', avatar: 'L' },
+];
 
 export default function AdminLoginPage() {
   const navigate = useNavigate();
@@ -10,56 +14,54 @@ export default function AdminLoginPage() {
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
-    setTimeout(() => {
-      // Check hardcoded accounts first
-      const hardcoded = adminAccounts.find(
-        (a) => a.email === form.email && a.password === form.password,
-      );
-      if (hardcoded) {
-        localStorage.setItem(
-          'admin_auth',
-          JSON.stringify({
-            email: hardcoded.email,
-            name: hardcoded.name,
-            role: hardcoded.role,
-            loginAt: new Date().toISOString(),
-          }),
-        );
-        navigate('/admin/dashboard');
+    try {
+      const { data, error: dbError } = await supabase
+        .from('admin_accounts')
+        .select('email, name, role, status')
+        .eq('email', form.email)
+        .eq('password_hash', form.password)
+        .maybeSingle();
+
+      if (dbError) throw dbError;
+
+      if (!data) {
+        setError('Email hoặc mật khẩu không đúng. Vui lòng thử lại.');
         setLoading(false);
         return;
       }
 
-      // Check approved custom accounts (registered by admin2)
-      const custom = findApprovedAccount(form.email, form.password);
-      if (custom) {
-        localStorage.setItem(
-          'admin_auth',
-          JSON.stringify({
-            email: custom.email,
-            name: custom.name,
-            role: 'admin2',
-            loginAt: new Date().toISOString(),
-          }),
-        );
-        navigate('/admin/dashboard');
+      if (data.status !== 'active') {
+        setError('Tài khoản đã bị vô hiệu hóa. Liên hệ Admin Cấp 1 để được hỗ trợ.');
         setLoading(false);
         return;
       }
 
-      setError('Email hoặc mật khẩu không đúng. Vui lòng thử lại.');
-      setLoading(false);
-    }, 800);
+      // Cập nhật last_login_at
+      await supabase
+        .from('admin_accounts')
+        .update({ last_login_at: new Date().toISOString() })
+        .eq('email', form.email);
+
+      localStorage.setItem('admin_auth', JSON.stringify({
+        email: data.email,
+        name: data.name,
+        role: data.role,
+        loginAt: new Date().toISOString(),
+      }));
+      navigate('/admin/dashboard');
+    } catch {
+      setError('Có lỗi kết nối, vui lòng thử lại.');
+    }
+    setLoading(false);
   };
 
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
       <div className="w-full max-w-md">
-        {/* Logo */}
         <div className="text-center mb-8">
           <div className="w-16 h-16 bg-red-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <span className="text-white font-bold text-3xl">Y</span>
@@ -68,7 +70,6 @@ export default function AdminLoginPage() {
           <p className="text-gray-400 text-sm mt-1">Đăng nhập vào trang quản trị</p>
         </div>
 
-        {/* Form */}
         <div className="bg-gray-900 rounded-2xl p-8 border border-gray-800">
           {error && (
             <div className="mb-4 px-4 py-3 bg-red-950 border border-red-800 rounded-lg flex items-center gap-2">
@@ -140,12 +141,12 @@ export default function AdminLoginPage() {
           {/* Demo accounts */}
           <div className="mt-5 pt-5 border-t border-gray-800 space-y-2">
             <p className="text-gray-600 text-[10px] uppercase tracking-wide font-semibold text-center mb-3">Tài khoản demo</p>
-            {adminAccounts.map((a) => (
+            {DEMO_ACCOUNTS.map((a) => (
               <button
                 key={a.email}
                 type="button"
                 onClick={() => setForm({ email: a.email, password: a.password })}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-750 border border-gray-700 hover:border-gray-600 transition-colors cursor-pointer"
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-gray-600 transition-colors cursor-pointer"
               >
                 <div className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 ${a.role === 'admin1' ? 'bg-red-600' : 'bg-orange-500'}`}>
                   {a.avatar}
@@ -161,13 +162,9 @@ export default function AdminLoginPage() {
             ))}
           </div>
 
-          {/* Register link */}
           <div className="mt-5 pt-4 border-t border-gray-800 text-center">
             <span className="text-gray-500 text-xs">Chưa có tài khoản? </span>
-            <Link
-              to="/admin/register"
-              className="text-orange-400 hover:text-orange-300 text-xs font-semibold transition-colors"
-            >
+            <Link to="/admin/register" className="text-orange-400 hover:text-orange-300 text-xs font-semibold transition-colors">
               Đăng ký Admin Cấp 2
             </Link>
           </div>
